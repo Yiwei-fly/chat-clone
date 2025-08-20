@@ -1,14 +1,17 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import "./chat.css";
 
 const MODEL_OPTIONS = [
-  { value: "gpt-4.1", label: "gpt-4.1（通用强）" },
-  { value: "gpt-4.1-mini", label: "gpt-4.1-mini（便宜快）" },
-  { value: "gpt-4o", label: "gpt-4o（多模态）" },
-  { value: "gpt-4o-mini", label: "gpt-4o-mini（多模态轻量）" },
+  { value: "gpt-4.1", label: "GPT-4.1" },
+  { value: "gpt-4.1-mini", label: "GPT-4.1-Mini" },
+  { value: "gpt-4o", label: "GPT-4 Vision" },
+  { value: "gpt-4o-mini", label: "GPT-4 Vision Mini" },
 ];
 
+
 export default function Page() {
+  // ...existing logic...
   const [messages, setMessages] = useState([]);
   const [system, setSystem] = useState("You are a helpful, concise assistant.");
   const [model, setModel] = useState(MODEL_OPTIONS[0].value);
@@ -16,24 +19,20 @@ export default function Page() {
   const [sending, setSending] = useState(false);
   const [images, setImages] = useState([]);
   const chatRef = useRef(null);
-
   useEffect(() => {
     chatRef.current?.scrollTo(0, chatRef.current.scrollHeight);
   }, [messages, sending]);
-
   async function send() {
     if (!draft.trim() && images.length === 0) return;
     const newMsgs = [...messages, { role: "user", content: draft }];
     setMessages(newMsgs);
     setDraft("");
     setSending(true);
-
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: newMsgs, model, system, images }),
     });
-
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let assistant = "";
@@ -43,11 +42,9 @@ export default function Page() {
       assistant += decoder.decode(value, { stream: true });
       setMessages([...newMsgs, { role: "assistant", content: assistant }]);
     }
-
     setImages([]);
     setSending(false);
   }
-
   function onPickFiles(e) {
     const files = Array.from(e.target.files || []);
     files.forEach((file) => {
@@ -68,11 +65,10 @@ export default function Page() {
     });
     e.target.value = "";
   }
-
+  // ...existing voice/recorder logic...
   const mediaRef = useRef(null);
   const chunksRef = useRef([]);
   const [recState, setRecState] = useState("idle");
-
   async function startRec() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mr = new MediaRecorder(stream);
@@ -94,7 +90,6 @@ export default function Page() {
     mediaRef.current?.stop();
     setRecState("idle");
   }
-
   async function speak(text) {
     const r = await fetch("/api/speech", {
       method: "POST",
@@ -107,61 +102,92 @@ export default function Page() {
     audio.play();
   }
 
+  // ChatGPT 风格布局
   return (
-    <div className="container">
-      <div className="header">
-        <div className="logo"><img src="/logo.svg" alt="logo"/><b>My Chat</b></div>
-        <span className="badge">{model}</span>
+    <div className="chat-container">
+      <div className="chat-header">
+        <div className="logo">
+          <img src="/logo.svg" alt="logo"/>
+          <span>ChatGPT</span>
+        </div>
+        <select value={model} onChange={(e) => setModel(e.target.value)}>
+          {MODEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
       </div>
 
-      <div className="card">
-        <div className="row" style={{gap:12}}>
-          <label>模型：</label>
-          <select value={model} onChange={(e)=>setModel(e.target.value)}>
-            {MODEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-          <button onClick={recState==="idle"?startRec:stopRec}>
-            {recState === "idle" ? "🎙️ 开始录音" : "⏹️ 停止录音"}
-          </button>
-          <input type="file" multiple onChange={onPickFiles} accept="image/*,.txt,.md,.json"/>
-        </div>
-        <hr/>
-        <div>
-          <div className="small">系统提示词（可选，用于设定 AI 人格/风格）</div>
-          <textarea value={system} onChange={(e)=>setSystem(e.target.value)} />
-        </div>
-      </div>
-
-      <div className="card chat" ref={chatRef}>
-        {messages.map((m,i)=> (
-          <div key={i} className={`msg ${m.role === 'user' ? 'user':'ai'}`}>
-            <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
-              <b>{m.role === 'user' ? 'You' : 'AI'}</b>
-              {m.role === 'assistant' && (
-                <button onClick={()=>speak(m.content)} title="朗读">🔊 朗读</button>
-              )}
+      <div className="chat-body" ref={chatRef}>
+        {messages.map((m, i) => (
+          <div key={i} className={`message ${m.role}`}>
+            <div className="message-avatar">
+              {m.role === 'user' ? '👤' : '🤖'}
             </div>
-            <div>{m.content}</div>
+            <div className="message-content">
+              <div className="message-header">
+                {m.role === 'user' ? 'You' : 'Assistant'}
+                {m.role === 'assistant' && (
+                  <button onClick={() => speak(m.content)} className="tool-button">🔊</button>
+                )}
+              </div>
+              <div>{m.content}</div>
+            </div>
           </div>
         ))}
-        {sending && <div className="msg ai">…</div>}
+        {sending && (
+          <div className="message assistant">
+            <div className="message-avatar">🤖</div>
+            <div className="message-content">
+              <div className="message-header">Assistant</div>
+              <div>...</div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {images.length>0 && (
-        <div className="card">
-          <div className="small">已选择的图片：</div>
-          <div className="preview">
-            {images.map((b64,idx)=> <img key={idx} src={`data:image/*;base64,${b64}`} alt="preview"/>) }
-          </div>
+      {images.length > 0 && (
+        <div className="images-preview">
+          {images.map((b64, idx) => (
+            <img key={idx} src={`data:image/*;base64,${b64}`} alt="preview" />
+          ))}
         </div>
       )}
 
-      <div className="card footer">
-        <input type="text" placeholder="输入消息…" value={draft} onChange={(e)=>setDraft(e.target.value)} style={{flex:1}} onKeyDown={(e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); } }}/>
-        <button disabled={sending} onClick={send}>发送</button>
+      <div className="chat-input">
+        <form className="input-form" onSubmit={(e) => { e.preventDefault(); send(); }}>
+          <div className="input-tools">
+            <input
+              type="file"
+              id="file-upload"
+              multiple
+              onChange={onPickFiles}
+              accept="image/*,.txt,.md,.json"
+              style={{ display: 'none' }}
+            />
+            <label htmlFor="file-upload" className="tool-button">📎</label>
+            <button
+              type="button"
+              className="tool-button"
+              onClick={recState === "idle" ? startRec : stopRec}
+            >
+              {recState === "idle" ? "🎙️" : "⏹️"}
+            </button>
+          </div>
+          <textarea
+            placeholder="Send a message..."
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+          />
+          <button type="submit" disabled={sending}>Send</button>
+        </form>
+        <div className="footer-tip">
+          本站仅在服务端调用 OpenAI API，保护密钥安全。
+        </div>
       </div>
-
-      <div className="small">温馨提示：为保护密钥安全，本网站只在服务器端调用 OpenAI API。</div>
     </div>
   );
 }

@@ -5,8 +5,8 @@ import "./chat.css";
 const MODEL_OPTIONS = [
   { value: "gpt-4.1", label: "GPT-4.1" },
   { value: "gpt-4.1-nano", label: "GPT-4.1-nano" },
-  { value: "gpt-4o", label: "GPT-4 Vision" },
-  { value: "gpt-4o-mini", label: "GPT-4 Vision Mini" },
+  { value: "gpt-4o", label: "GPT-4o" },
+  { value: "gpt-4o-mini", label: "GPT-4o Mini" },
 ];
 
 

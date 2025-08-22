@@ -2,12 +2,9 @@
 import OpenAI from "openai";
 export const runtime = "nodejs";
 
-/** 从非流式 Responses 结果中提取纯文本 */
+/** 从非流式 Responses 返回中提取纯文本 */
 function extractText(resp) {
-  // 新版 SDK 常有 resp.output_text
   if (typeof resp?.output_text === "string") return resp.output_text;
-
-  // 兜底：遍历 output -> content -> 找 type=output_text 的文本
   try {
     const parts = [];
     const out = Array.isArray(resp?.output) ? resp.output : [];
@@ -25,29 +22,30 @@ function extractText(resp) {
   }
 }
 
-/** 判断错误信息是否为“流式不可用/需验证才能流式”等 */
+/** 错误判定：流式不可用/需验证才能流式 */
 function isStreamNotAllowed(errMsg) {
   if (!errMsg) return false;
-  const m = errMsg.toLowerCase();
+  const m = String(errMsg).toLowerCase();
   return (
-    m.includes("must be verified to stream") ||   // 需要组织验证才能流式
-    m.includes("streaming is not") ||             // 不支持流式
+    m.includes("must be verified to stream") ||
+    m.includes("streaming is not") ||
     m.includes("does not support stream") ||
-    m.includes("stream is not supported")
+    m.includes("stream is not supported") ||
+    m.includes("unsupported_value") && m.includes("stream")
   );
 }
 
-/** 判断错误是否与 reasoning 参数不被支持相关 */
+/** 错误判定：reasoning 参数不支持 */
 function isReasoningUnsupported(errMsg) {
   if (!errMsg) return false;
-  const m = errMsg.toLowerCase();
+  const m = String(errMsg).toLowerCase();
   return m.includes("unknown parameter") && m.includes("reasoning");
 }
 
-/** 判断错误是否与 temperature 参数不被支持相关 */
+/** 错误判定：temperature 参数不支持 */
 function isTemperatureUnsupported(errMsg) {
   if (!errMsg) return false;
-  const m = errMsg.toLowerCase();
+  const m = String(errMsg).toLowerCase();
   return m.includes("unsupported parameter") && m.includes("temperature");
 }
 
@@ -57,16 +55,16 @@ export async function POST(req) {
       messages = [],
       model = "gpt-4o",
       system = "",
-      images = [],
-      temperature = 0.7,          // 某些模型不支持；会自动移除
+      images = [],               // base64 数组（与最后一条 user 合并发送）
+      temperature = 0.7,         // 某些模型不支持；会智能剥离
       maxTokens = 1200,
       lastResponseId = null,
-      reasoningEffort = null,     // "medium" | "high" | null
+      reasoningEffort = null,    // "medium" | "high" | null
     } = await req.json();
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // ---------- 组装 Responses API input ----------
+    // ---------- 构造 Responses input ----------
     const input = [];
 
     if (system && system.trim()) {
@@ -77,20 +75,21 @@ export async function POST(req) {
     const history = messages.slice(0, -1);
 
     for (const m of history) {
-      const t = String(m?.content ?? "");
+      if (!m || !m.role) continue;
+      const text = String(m.content ?? "");
       if (m.role === "user") {
-        input.push({ role: "user", content: [{ type: "input_text", text: t }] });
+        input.push({ role: "user", content: [{ type: "input_text", text }] });
       } else if (m.role === "assistant") {
-        input.push({ role: "assistant", content: [{ type: "output_text", text: t }] });
+        input.push({ role: "assistant", content: [{ type: "output_text", text }] });
       } else if (m.role === "system") {
-        input.push({ role: "system", content: [{ type: "input_text", text: t }] });
+        input.push({ role: "system", content: [{ type: "input_text", text }] });
       }
     }
 
     if (last && last.role === "user") {
       const parts = [];
-      const txt = String(last.content ?? "").trim();
-      if (txt) parts.push({ type: "input_text", text: txt });
+      const lastText = String(last.content ?? "").trim();
+      if (lastText) parts.push({ type: "input_text", text: lastText });
       for (const b64 of images) {
         parts.push({ type: "input_image", image_url: `data:image/*;base64,${b64}` });
       }
@@ -104,7 +103,7 @@ export async function POST(req) {
       );
     }
 
-    // ---------- 构造可变 options（便于逐步降级） ----------
+    // ---------- 生成可变 options，便于逐步降级 ----------
     const buildOptions = ({
       withStream = true,
       withTemp = true,
@@ -122,18 +121,19 @@ export async function POST(req) {
       return opts;
     };
 
-    // 首选：带 stream、temperature、reasoning
+    // 首选：流式 + temperature + reasoning
     let options = buildOptions({ withStream: true, withTemp: true, withReasoning: true });
 
-    // ---------- 先试流式；不行则逐步降级 ----------
-    let useStream = true;
+    // ---------- 先试流式；不行就降级 ----------
     let stream;
+    let useStream = true;
+
     try {
       stream = await openai.responses.create(options);
     } catch (err) {
-      const msg = String(err?.message || "");
+      const msg = err?.message || "";
 
-      // 情况 1：模型/账号不允许流式 -> 改用非流式
+      // 情况 1：流式不可用/需验证 -> 改用非流式
       if (isStreamNotAllowed(msg)) {
         useStream = false;
 
@@ -143,49 +143,36 @@ export async function POST(req) {
           const text = extractText(resp);
           return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
         } catch (e2) {
-          const m2 = String(e2?.message || "");
-          // 非流式 + 去掉 reasoning
+          const m2 = e2?.message || "";
           if (isReasoningUnsupported(m2)) {
-            try {
-              const resp = await openai.responses.create(buildOptions({ withStream: false, withTemp: true, withReasoning: false }));
-              const text = extractText(resp);
-              return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-            } catch (e3) {
-              const m3 = String(e3?.message || "");
-              // 非流式 + 去掉 reasoning + 去掉 temperature
-              if (isTemperatureUnsupported(m3)) {
-                const resp = await openai.responses.create(buildOptions({ withStream: false, withTemp: false, withReasoning: false }));
-                const text = extractText(resp);
-                return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-              }
-              throw e3;
-            }
+            // 非流式 + 去 reasoning
+            const resp = await openai.responses.create(buildOptions({ withStream: false, withTemp: true, withReasoning: false }));
+            const text = extractText(resp);
+            return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
           }
-          // 非流式 + reasoning 保留，去掉 temperature
           if (isTemperatureUnsupported(m2)) {
+            // 非流式 + 去 temperature
             const resp = await openai.responses.create(buildOptions({ withStream: false, withTemp: false, withReasoning: true }));
             const text = extractText(resp);
             return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
           }
-
           // 其它错误
           throw e2;
         }
       }
 
-      // 情况 2：reasoning 不支持 -> 去掉 reasoning，再试流式
+      // 情况 2：流式允许，但 reasoning 不支持 -> 去 reasoning 继续流式
       if (isReasoningUnsupported(msg) && options.reasoning) {
         options = buildOptions({ withStream: true, withTemp: true, withReasoning: false });
         try {
           stream = await openai.responses.create(options);
         } catch (e2) {
-          const m2 = String(e2?.message || "");
-          // temperature 不支持 -> 再去掉
+          const m2 = e2?.message || "";
           if (isTemperatureUnsupported(m2)) {
             options = buildOptions({ withStream: true, withTemp: false, withReasoning: false });
             stream = await openai.responses.create(options);
           } else if (isStreamNotAllowed(m2)) {
-            // 直接降级到非流式
+            // 降级非流式
             const resp = await openai.responses.create(buildOptions({ withStream: false, withTemp: true, withReasoning: false }));
             const text = extractText(resp);
             return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -194,19 +181,19 @@ export async function POST(req) {
           }
         }
       }
-      // 情况 3：temperature 不支持 -> 去掉 temperature 再试流式
+      // 情况 3：流式允许，但 temperature 不支持 -> 去 temperature 继续流式
       else if (isTemperatureUnsupported(msg) && options.temperature !== undefined) {
         options = buildOptions({ withStream: true, withTemp: false, withReasoning: true });
         try {
           stream = await openai.responses.create(options);
         } catch (e2) {
-          const m2 = String(e2?.message || "");
+          const m2 = e2?.message || "";
           if (isReasoningUnsupported(m2)) {
             options = buildOptions({ withStream: true, withTemp: false, withReasoning: false });
             try {
               stream = await openai.responses.create(options);
             } catch (e3) {
-              if (isStreamNotAllowed(String(e3?.message || ""))) {
+              if (isStreamNotAllowed(e3?.message || "")) {
                 const resp = await openai.responses.create(buildOptions({ withStream: false, withTemp: false, withReasoning: false }));
                 const text = extractText(resp);
                 return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -254,7 +241,7 @@ export async function POST(req) {
       });
     }
 
-    // 理论上不会走到这里；兜底
+    // 兜底（理论上到不了）
     return new Response("No content", { status: 200 });
   } catch (err) {
     console.error("Route fatal error:", err);
